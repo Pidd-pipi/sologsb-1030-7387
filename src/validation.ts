@@ -1,3 +1,4 @@
+import { criticalCoverageGaps } from './signoffs';
 import type { ChecklistItem, ChecklistProject, ValidationIssue } from './types';
 
 const normalize = (value: string) => value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('en');
@@ -72,6 +73,23 @@ export function validateProject(project: ChecklistProject): ValidationIssue[] {
       add({ id: `${stage.id}-empty`, type: 'orphan-stage', level: 'info', stageId: stage.id, title: '阶段尚未配置检查项', detail: `${stage.name} 当前为空。` });
     }
   });
+
+  // 冻结前每个关键项都必须有有效机务签认；编辑中只作提示，复核阶段为阻断错误。
+  // 普通项不参与签认闸门。
+  if (project.status !== 'frozen') {
+    const level = project.status === 'review' ? 'error' : 'info';
+    criticalCoverageGaps(project.items, project.signoffs).forEach(({ item, reason }) => {
+      add({
+        id: `${item.id}-missing-signoff`,
+        type: 'missing-signoff',
+        level,
+        stageId: item.stageId,
+        itemId: item.id,
+        title: level === 'error' ? '关键项缺少有效签认' : '关键项待签认',
+        detail: `“${item.challenge || '未命名检查项'}”：${reason}`
+      });
+    });
+  }
 
   return issues;
 }

@@ -121,6 +121,41 @@ kbd { border: 1px solid var(--gray-a7); border-bottom-width: 2px; border-radius:
 .help-list div { display: grid; grid-template-columns: 150px 1fr; align-items: center; gap: 12px; font-size: 12px; }
 .help-list kbd { justify-self: start; }
 
+/* 机务签认覆盖 */
+.signoff-summary { padding: 14px 16px; }
+.gap-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.gap-chip { display: block; font-size: 12px; }
+.signoff-matrix { display: grid; gap: 12px; }
+.signoff-stage-card { padding: 14px 16px; }
+.signoff-rows { display: grid; gap: 8px; }
+.signoff-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 9px 11px; border: 1px solid var(--gray-a5); border-radius: 10px; }
+.signoff-row-main { min-width: 0; display: grid; gap: 3px; }
+.signoff-row-main small { color: var(--gray-10); font-size: 11px; }
+.signoff-reason { color: var(--amber-11) !important; }
+.signoff-reason.ok { color: var(--green-11) !important; }
+.signoff-ledger { display: grid; gap: 12px; }
+.signoff-sheet { padding: 14px 16px; display: grid; gap: 12px; }
+.sheet-coverage { display: grid; gap: 4px; padding-top: 10px; border-top: 1px dashed var(--gray-a6); }
+.sheet-coverage-row { display: flex; justify-content: space-between; gap: 10px; padding: 5px 8px; border-radius: 8px; font-size: 12px; }
+.sheet-coverage-row.ok { background: color-mix(in srgb, var(--green-4) 35%, transparent); }
+.sheet-coverage-row.bad { background: color-mix(in srgb, var(--amber-4) 40%, transparent); }
+.version-signoff { padding: 15px 17px; }
+.version-signoff-sheet { border: 1px solid var(--gray-a5); border-radius: 12px; padding: 11px 13px; display: grid; gap: 8px; }
+.inspector-signoff { border: 1px solid var(--accent-a6); border-radius: 10px; padding: 9px 11px; background: var(--accent-a2); display: grid; gap: 5px; }
+.inspector-signoff p.rt-Text { margin: 0; }
+.dialog-field { display: grid; gap: 6px; }
+.dialog-field > span { font-size: 12px; font-weight: 700; }
+.register-item-list { max-height: 300px; overflow: auto; display: grid; gap: 10px; padding: 10px; border: 1px solid var(--gray-a5); border-radius: 10px; background: var(--gray-a2); }
+.register-item-row { display: flex; align-items: center; gap: 8px; padding: 4px 2px; font-size: 12px; }
+.freeze-signoff-list { display: grid; gap: 5px; max-height: 240px; overflow: auto; }
+.freeze-signoff-row { display: flex; justify-content: space-between; gap: 10px; padding: 7px 10px; border-radius: 8px; font-size: 12px; }
+.freeze-signoff-row.ok { background: color-mix(in srgb, var(--green-4) 35%, transparent); }
+.freeze-signoff-row.bad { background: color-mix(in srgb, var(--red-4) 40%, transparent); }
+.signoff-cell { white-space: pre-line; font-size: 11px; line-height: 1.5; }
+.signoff-cell span { display: block; }
+.signoff-missing-row { background: color-mix(in srgb, var(--red-4) 28%, transparent); }
+.print-coverage-tag { display: inline-block; margin: 2px 6px 2px 0; padding: 1px 7px; border: 1px solid var(--gray-a6); border-radius: 999px; font-size: 10px; }
+
 @media (max-width: 1320px) {
   .editor-grid { grid-template-columns: 210px minmax(570px, 1fr) 315px; }
   .workflow-step { min-width: 160px; }

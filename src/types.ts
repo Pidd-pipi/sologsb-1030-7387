@@ -1,6 +1,25 @@
 export type WorkflowStatus = 'draft' | 'review' | 'frozen';
 export type IssueLevel = 'error' | 'warning' | 'info';
-export type IssueType = 'duplicate' | 'missing-response' | 'unreachable-precondition' | 'stage-order' | 'orphan-stage';
+export type IssueType = 'duplicate' | 'missing-response' | 'unreachable-precondition' | 'stage-order' | 'orphan-stage' | 'missing-signoff';
+
+/** 一条机务签认对单个检查项的覆盖；fingerprint 为登记时该项内容与前置条件的快照。 */
+export interface SignoffCoverage {
+  itemId: string;
+  fingerprint: string;
+}
+
+/** 机务签认单：一次可覆盖多个检查项，逐项判定是否仍有效。 */
+export interface MaintenanceSignoff {
+  id: string;
+  /** 签认号 */
+  sheetNo: string;
+  /** 截止时间（ISO） */
+  deadline: string;
+  /** 登记时间（ISO） */
+  createdAt: string;
+  /** 本单覆盖的检查项 */
+  coverages: SignoffCoverage[];
+}
 
 export interface FlightStage {
   id: string;
@@ -29,6 +48,8 @@ export interface ChecklistRevision {
   note: string;
   stages: FlightStage[];
   items: ChecklistItem[];
+  /** 冻结时刻保留的机务签认关系 */
+  signoffs: MaintenanceSignoff[];
 }
 
 export interface ChecklistProject {
@@ -42,6 +63,8 @@ export interface ChecklistProject {
   stages: FlightStage[];
   items: ChecklistItem[];
   revisions: ChecklistRevision[];
+  /** 机务签认单（含逐项覆盖与登记时快照） */
+  signoffs: MaintenanceSignoff[];
 }
 
 export interface WorkspaceState {
@@ -66,7 +89,7 @@ export interface VersionOption {
 }
 
 export interface DiffEntry {
-  type: 'added' | 'removed' | 'changed' | 'stage';
+  type: 'added' | 'removed' | 'changed' | 'stage' | 'signoff';
   key: string;
   stage: string;
   before: string;

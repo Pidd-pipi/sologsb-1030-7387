@@ -1,18 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createInitialState } from './data';
-import type { ChecklistItem, ChecklistProject, ChecklistRevision, FlightStage, WorkspaceState } from './types';
+import { itemFingerprint } from './signoffs';
+import type { ChecklistItem, ChecklistProject, ChecklistRevision, FlightStage, MaintenanceSignoff, WorkspaceState } from './types';
 
 const STORAGE_KEY = 'sologsb-1030-workspace-v1';
 const clone = <T>(value: T): T => structuredClone(value);
 const uid = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 const now = () => new Date().toISOString();
 
+/** 兼容浏览器中早于签认功能保存的工作区：补齐签认字段。 */
+function migrateState(state: WorkspaceState): WorkspaceState {
+  state.projects.forEach((project) => {
+    if (!Array.isArray(project.signoffs)) project.signoffs = [];
+    project.revisions.forEach((revision) => {
+      if (!Array.isArray(revision.signoffs)) revision.signoffs = [];
+    });
+  });
+  return state;
+}
+
 function loadState(): WorkspaceState {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       const parsed = JSON.parse(saved) as WorkspaceState;
-      if (parsed.schemaVersion === 1 && parsed.projects?.length) return parsed;
+      if (parsed.schemaVersion === 1 && parsed.projects?.length) return migrateState(parsed);
     }
   } catch {
     // Corrupted local draft falls back to the bundled operational checklist.
@@ -83,7 +95,8 @@ export function useChecklistStore() {
         reviewNote: '',
         stages: [{ id: uid('stage'), name: '飞行前检查', order: 0, description: '说明本阶段目标。' }],
         items: [],
-        revisions: []
+        revisions: [],
+        signoffs: []
       });
       next.selectedProjectId = id;
       return next;
@@ -199,11 +212,43 @@ export function useChecklistStore() {
         createdAt: now(),
         note: note.trim() || '复核通过并冻结',
         stages: clone(project.stages),
-        items: clone(project.items)
+        items: clone(project.items),
+        signoffs: clone(project.signoffs)
       };
       project.revisions.unshift(snapshot);
       project.status = 'frozen';
       project.reviewNote = note.trim();
+    });
+  }, [directUpdate]);
+
+  /**
+   * 复核时登记一张机务签认单：记录签认号、截止时间和覆盖项，
+   * 并为每个覆盖项留存登记时的内容/前置条件指纹。
+   * 登记在复核阶段同样可用；冻结后不可登记。
+   */
+  const registerSignoff = useCallback((sheetNo: string, deadline: string, itemIds: string[]) => {
+    directUpdate((project) => {
+      if (project.status === 'frozen' || !itemIds.length) return;
+      const coverages = itemIds
+        .map((itemId) => project.items.find((item) => item.id === itemId))
+        .filter((item): item is ChecklistItem => Boolean(item))
+        .map((item) => ({ itemId: item.id, fingerprint: itemFingerprint(item) }));
+      if (!coverages.length) return;
+      const signoff: MaintenanceSignoff = {
+        id: uid('signoff'),
+        sheetNo: sheetNo.trim(),
+        deadline: new Date(deadline).toISOString(),
+        createdAt: now(),
+        coverages
+      };
+      project.signoffs.unshift(signoff);
+    });
+  }, [directUpdate]);
+
+  const deleteSignoff = useCallback((signoffId: string) => {
+    directUpdate((project) => {
+      if (project.status === 'frozen') return;
+      project.signoffs = project.signoffs.filter((signoff) => signoff.id !== signoffId);
     });
   }, [directUpdate]);
 
@@ -261,6 +306,8 @@ export function useChecklistStore() {
     submitForReview,
     freezeRevision,
     createRevision,
+    registerSignoff,
+    deleteSignoff,
     undo,
     redo,
     saveNow

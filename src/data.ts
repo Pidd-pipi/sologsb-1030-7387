@@ -1,4 +1,5 @@
-import type { ChecklistItem, ChecklistProject, FlightStage, WorkspaceState } from './types';
+import { itemFingerprint } from './signoffs';
+import type { ChecklistItem, ChecklistProject, FlightStage, MaintenanceSignoff, WorkspaceState } from './types';
 
 const stages: FlightStage[] = [
   { id: 'stage-preflight', name: '飞行前检查', order: 0, description: '驾驶舱准备与飞机状态核对。' },
@@ -49,6 +50,58 @@ const items: ChecklistItem[] = [
   item('item-landing-clear', 'stage-landing', 1, '着陆跑道', 'CLEAR', true, ['item-runway'], '跑道不安全时执行复飞。')
 ];
 
+const itemById = new Map(items.map((entry) => [entry.id, entry]));
+
+const daysFromNow = (days: number): string => {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  date.setHours(18, 0, 0, 0);
+  return date.toISOString();
+};
+const daysAgo = (days: number): string => {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  date.setHours(18, 0, 0, 0);
+  return date.toISOString();
+};
+
+// 示范机务签认单：一张单可覆盖多个关键项，逐项留存登记时的内容/前置条件指纹。
+const buildSignoffs = (): MaintenanceSignoff[] => {
+  const fp = (id: string) => itemFingerprint(itemById.get(id)!);
+  // 旧版签认：襟翼当时回应为 CHECKED，当前为空，演示“只在该项失效、同单其余项沿用”。
+  const flapsStaleFingerprint = itemFingerprint({ ...itemById.get('item-flaps')!, response: 'CHECKED' });
+  return [
+    {
+      id: 'signoff-preflight',
+      sheetNo: 'JW-2026-0925-A',
+      deadline: daysFromNow(30),
+      createdAt: '2026-09-25T02:00:00.000Z',
+      coverages: ['item-battery', 'item-fuel'].map((id) => ({ itemId: id, fingerprint: fp(id) }))
+    },
+    {
+      id: 'signoff-takeoff',
+      sheetNo: 'JW-2026-0926-B',
+      deadline: daysFromNow(14),
+      createdAt: '2026-09-26T03:10:00.000Z',
+      coverages: [
+        { itemId: 'item-taxi-clearance', fingerprint: fp('item-taxi-clearance') },
+        { itemId: 'item-runway', fingerprint: fp('item-runway') },
+        { itemId: 'item-flaps', fingerprint: flapsStaleFingerprint },
+        { itemId: 'item-start-clear', fingerprint: fp('item-start-clear') }
+      ]
+    },
+    {
+      id: 'signoff-expired',
+      sheetNo: 'JW-2026-0830-C',
+      deadline: daysAgo(10),
+      createdAt: daysAgo(40),
+      coverages: [{ itemId: 'item-landing-clear', fingerprint: fp('item-landing-clear') }]
+    }
+  ];
+};
+
+const signoffs = buildSignoffs();
+
 const project: ChecklistProject = {
   id: 'project-c172',
   name: 'C172 标准操作检查单',
@@ -59,6 +112,7 @@ const project: ChecklistProject = {
   reviewNote: '',
   stages: structuredClone(stages),
   items: structuredClone(items),
+  signoffs: structuredClone(signoffs),
   revisions: [
     {
       id: 'revision-2',
@@ -67,7 +121,8 @@ const project: ChecklistProject = {
       createdAt: '2026-09-20T04:20:00.000Z',
       note: '训练飞行前发布版本',
       stages: structuredClone(stages),
-      items: structuredClone(items.filter((entry) => entry.id !== 'item-pressurization').map((entry) => entry.id === 'item-flaps' ? { ...entry, response: 'CHECKED' } : entry))
+      items: structuredClone(items.filter((entry) => entry.id !== 'item-pressurization').map((entry) => entry.id === 'item-flaps' ? { ...entry, response: 'CHECKED' } : entry)),
+      signoffs: []
     },
     {
       id: 'revision-1',
@@ -76,7 +131,8 @@ const project: ChecklistProject = {
       createdAt: '2026-09-12T07:30:00.000Z',
       note: '初始基线',
       stages: structuredClone(stages.slice(0, 5)),
-      items: structuredClone(items.filter((entry) => entry.id !== 'item-pressurization' && entry.id !== 'item-landing-clear'))
+      items: structuredClone(items.filter((entry) => entry.id !== 'item-pressurization' && entry.id !== 'item-landing-clear')),
+      signoffs: []
     }
   ]
 };
