@@ -22,6 +22,13 @@ import {
   Tooltip
 } from '@radix-ui/themes';
 import { buildVersionOptions, diffVersions } from './diff';
+import {
+  coveringsForItem,
+  formatDeadline,
+  hasValidSignoff,
+  reviewSignoffCoverage,
+  validSignoffNumbers
+} from './signoff';
 import { useChecklistStore } from './store';
 import type { ChecklistItem, ChecklistProject, IssueLevel, ValidationIssue, WorkflowStatus } from './types';
 import { validateProject } from './validation';
@@ -56,6 +63,13 @@ function App() {
   const [showPreview, setShowPreview] = useState(false);
   const [freezeOpen, setFreezeOpen] = useState(false);
   const [freezeNote, setFreezeNote] = useState('');
+  const [signoffOpen, setSignoffOpen] = useState(false);
+  const [soNumber, setSoNumber] = useState('');
+  const [soInspector, setSoInspector] = useState('');
+  const [soDeadline, setSoDeadline] = useState('');
+  const [soNote, setSoNote] = useState('');
+  const [soItemIds, setSoItemIds] = useState<string[]>([]);
+  const [nowTick, setNowTick] = useState(() => Date.now());
   const [leftVersion, setLeftVersion] = useState('current');
   const [rightVersion, setRightVersion] = useState(project.revisions[0]?.id ?? '');
   const [savePulse, setSavePulse] = useState(false);
@@ -65,6 +79,14 @@ function App() {
   const issues = useMemo(() => validateProject(project), [project]);
   const errors = issues.filter((issue) => issue.level === 'error').length;
   const warnings = issues.filter((issue) => issue.level === 'warning').length;
+  // 每 30 秒刷新一次，保证截止时间过期后状态即时更新
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowTick(Date.now()), 30000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const signoffGaps = useMemo(() => reviewSignoffCoverage(project.items, project.signoffs ?? [], nowTick), [project, nowTick]);
+  const criticalItems = useMemo(() => project.items.filter((item) => item.critical), [project.items]);
+  const coveredCriticalCount = criticalItems.length - signoffGaps.length;
   const selectedItem = project.items.find((item) => item.id === selectedItemId);
   const versionOptions = useMemo(() => buildVersionOptions(project), [project]);
   const diffEntries = useMemo(() => diffVersions(project, leftVersion, rightVersion), [project, leftVersion, rightVersion]);
@@ -149,6 +171,36 @@ function App() {
     challengeRef.current?.focus();
   }
 
+  function defaultDeadline() {
+    const date = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    date.setSeconds(0, 0);
+    const pad = (value: number) => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  function openSignoffDialog() {
+    // 默认勾选仍缺有效签认的关键项，一张单一次补签
+    setSoItemIds(signoffGaps.map((gap) => gap.itemId));
+    setSoDeadline(defaultDeadline());
+    setSignoffOpen(true);
+  }
+
+  function toggleSignoffItem(itemId: string) {
+    setSoItemIds((ids) => (ids.includes(itemId) ? ids.filter((id) => id !== itemId) : [...ids, itemId]));
+  }
+
+  const signoffFormValid = soNumber.trim().length > 0 && soItemIds.length > 0 && !Number.isNaN(new Date(soDeadline).getTime());
+
+  function submitSignoff() {
+    if (!signoffFormValid) return;
+    store.registerSignoff({ number: soNumber, inspector: soInspector, deadline: new Date(soDeadline).toISOString(), note: soNote, itemIds: soItemIds });
+    setSignoffOpen(false);
+    setSoNumber('');
+    setSoInspector('');
+    setSoNote('');
+    setSoItemIds([]);
+  }
+
   function selectIssue(issue: ValidationIssue) {
     if (issue.itemId) setSelectedItemId(issue.itemId);
     setActiveTab('editor');
@@ -156,19 +208,50 @@ function App() {
   }
 
   function exportPrintableHtml() {
+    const nowMs = Date.now();
+    const signoffs = project.signoffs ?? [];
     const stageOrder = project.stages.slice().sort((a, b) => a.order - b.order);
     const body = stageOrder.map((stage) => {
-      const rows = project.items.filter((item) => item.stageId === stage.id).sort((a, b) => a.order - b.order).map((item) => `
-        <tr><td>${item.critical ? '<strong>◆</strong> ' : ''}${escapeHtml(item.challenge)}</td><td>${escapeHtml(item.response || '未填写')}</td><td>${escapeHtml(item.abnormalProcedure || '—')}</td></tr>
-      `).join('');
-      return `<section><h2>${escapeHtml(stage.name)}</h2><p>${escapeHtml(stage.description)}</p><table><thead><tr><th>挑战语</th><th>预期回应</th><th>异常处置</th></tr></thead><tbody>${rows || '<tr><td colspan="3">本阶段暂无项目</td></tr>'}</tbody></table></section>`;
+      const rows = project.items.filter((item) => item.stageId === stage.id).sort((a, b) => a.order - b.order).map((item) => {
+        let signoffCell = '<span style="color:#999">—</span>';
+        if (item.critical) {
+          const coverings = coveringsForItem(item, signoffs, nowMs);
+          const valid = coverings.filter((entry) => entry.state === 'valid');
+          if (valid.length) {
+            signoffCell = valid.map((entry) => `<span style="color:#0a7d2c">${escapeHtml(entry.signoff.number)}</span>`).join(' ');
+          } else if (coverings.length) {
+            signoffCell = coverings.map((entry) => `<span style="color:#b54708">${escapeHtml(entry.signoff.number)}(${entry.state === 'stale' ? '该项失效' : '过期'})</span>`).join(' ');
+          } else {
+            signoffCell = '<span style="color:#c0392b">待签认</span>';
+          }
+        }
+        return `
+        <tr${item.critical ? ' class="crit"' : ''}><td>${item.critical ? '<strong>◆</strong> ' : ''}${escapeHtml(item.challenge)}</td><td>${escapeHtml(item.response || '未填写')}</td><td>${escapeHtml(item.abnormalProcedure || '—')}</td><td>${signoffCell}</td></tr>
+      `;
+      }).join('');
+      return `<section><h2>${escapeHtml(stage.name)}</h2><p>${escapeHtml(stage.description)}</p><table><thead><tr><th>挑战语</th><th>预期回应</th><th>异常处置</th><th>机务签认</th></tr></thead><tbody>${rows || '<tr><td colspan="4">本阶段暂无项目</td></tr>'}</tbody></table></section>`;
     }).join('');
+    const registerRows = signoffs.map((signoff) => {
+      const covered = Object.keys(signoff.covered).map((itemId) => {
+        const item = project.items.find((entry) => entry.id === itemId);
+        if (!item) return '';
+        const state = coveringsForItem(item, [signoff], nowMs)[0]?.state;
+        const cls = state === 'valid' ? 'color:#0a7d2c' : state ? 'color:#b54708' : '';
+        const suffix = state === 'stale' ? '(该项失效)' : state === 'expired' ? '(过期)' : '';
+        return `<span class="tag" style="${cls}">${escapeHtml(item.challenge)}${suffix}</span>`;
+      }).join(' ');
+      return `<tr><td>${escapeHtml(signoff.number)}</td><td>${escapeHtml(signoff.inspector || '—')}</td><td>${escapeHtml(formatDeadline(signoff.deadline))}</td><td>${covered}</td></tr>`;
+    }).join('');
+    const register = signoffs.length
+      ? `<section class="register"><h2>机务签认台账</h2><p>一张签认单可覆盖多个关键项；某项内容或前置条件变化后，旧签认仅对该项失效，其余覆盖项沿用。</p><table><thead><tr><th>签认号</th><th>签认机务</th><th>截止时间</th><th>覆盖关键项</th></tr></thead><tbody>${registerRows}</tbody></table></section>`
+      : '';
     const documentHtml = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(project.name)}</title><style>
       body{font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#111;margin:36px}
       h1{margin:0 0 4px} .meta{color:#666;margin-bottom:28px} h2{border-bottom:2px solid #222;padding-bottom:5px;margin-top:26px}
       table{width:100%;border-collapse:collapse} th,td{border:1px solid #bbb;padding:7px;text-align:left;vertical-align:top} th{background:#eee}
+      tr.crit td:first-child{color:#c0392b} .register .tag{display:inline-block;margin:2px 6px 2px 0;white-space:nowrap}
       @media print{body{margin:15mm}section{break-inside:avoid}}
-    </style></head><body><h1>${escapeHtml(project.name)}</h1><div class="meta">${escapeHtml(project.aircraft)} · r${project.revision} · ${escapeHtml(statusMeta[project.status].label)} · 导出 ${new Date().toLocaleString('zh-CN')}</div>${body}</body></html>`;
+    </style></head><body><h1>${escapeHtml(project.name)}</h1><div class="meta">${escapeHtml(project.aircraft)} · r${project.revision} · ${escapeHtml(statusMeta[project.status].label)} · 导出 ${new Date().toLocaleString('zh-CN')}</div>${body}${register}</body></html>`;
     const url = URL.createObjectURL(new Blob([documentHtml], { type: 'text/html;charset=utf-8' }));
     const anchor = document.createElement('a');
     anchor.href = url;
@@ -235,7 +318,13 @@ function App() {
           <Flex gap="2" align="center" wrap="wrap">
             <Badge color={statusMeta[project.status].color} size="2">r{project.revision} · {statusMeta[project.status].label}</Badge>
             <Text size="1" color="gray">{errors ? `${errors} 个阻断` : '无阻断问题'} · {warnings} 个警告</Text>
+            {criticalItems.length > 0 && (
+              <Tooltip content="每个关键项都必须有有效机务签认才能冻结；未动项沿用旧签认，仅变化项需补签">
+                <Badge color={signoffGaps.length ? 'red' : 'green'} size="2" variant="soft">机务签认 {coveredCriticalCount}/{criticalItems.length}</Badge>
+              </Tooltip>
+            )}
             {project.status === 'draft' && <Button color="amber" onClick={store.submitForReview} disabled={errors > 0}>提交复核</Button>}
+            {project.status === 'review' && <Button color="amber" variant="soft" onClick={openSignoffDialog}>登记签认单</Button>}
             {project.status === 'review' && <Button color="green" onClick={() => setFreezeOpen(true)} disabled={errors > 0}>复核通过并冻结</Button>}
             {project.status === 'frozen' && <Button onClick={store.createRevision}>创建修订 r{project.revision + 1}</Button>}
             <Button variant="soft" onClick={() => setShowPreview(true)}>只读预览</Button>
@@ -287,6 +376,16 @@ function App() {
                   </div>
                   {project.status !== 'draft' && <Callout.Root color={project.status === 'review' ? 'amber' : 'green'} mb="4"><Callout.Text>{statusMeta[project.status].description} 当前内容不能直接编辑。</Callout.Text></Callout.Root>}
 
+                  {criticalItems.length > 0 && (
+                    <SignoffCoveragePanel
+                      project={project}
+                      nowMs={nowTick}
+                      onRegister={openSignoffDialog}
+                      onDelete={store.deleteSignoff}
+                      onSelectItem={setSelectedItemId}
+                    />
+                  )}
+
                   <div className="quick-entry">
                     <Select.Root value={quickStageId || undefined} onValueChange={setQuickStageId} disabled={project.status !== 'draft'}>
                       <Select.Trigger variant="soft" aria-label="新检查项所属阶段" />
@@ -332,6 +431,13 @@ function App() {
                                   <Flex gap="2" align="center" wrap="wrap">
                                     <strong>{item.challenge || '未命名检查项'}</strong>
                                     {item.critical && <Badge color="red" size="1">关键</Badge>}
+                                    {item.critical && (() => {
+                                      const coverings = coveringsForItem(item, project.signoffs ?? [], nowTick);
+                                      if (!coverings.length) return <Badge color="red" size="1" variant="soft">待签认</Badge>;
+                                      if (hasValidSignoff(item, project.signoffs ?? [], nowTick)) return <Tooltip content={coverings.filter((c) => c.state === 'valid').map((c) => c.signoff.number).join('、')}><Badge color="green" size="1" variant="soft">✓签认</Badge></Tooltip>;
+                                      const label = coverings.some((c) => c.state === 'stale') ? '签认失效' : '签认过期';
+                                      return <Tooltip content={coverings.map((c) => `${c.signoff.number}：${c.state === 'stale' ? '该项已变化' : '已过期'}`).join('；')}><Badge color="orange" size="1" variant="soft">{label}</Badge></Tooltip>;
+                                    })()}
                                     {item.preconditionIds.length > 0 && <Badge color="blue" size="1">{item.preconditionIds.length} 前置</Badge>}
                                     {itemIssues.length > 0 && <Badge color={itemIssues.some((issue) => issue.level === 'error') ? 'red' : 'amber'} size="1">{itemIssues.length} 问题</Badge>}
                                   </Flex>
@@ -364,6 +470,21 @@ function App() {
                             <label><span>挑战语</span><TextField.Root value={selectedItem.challenge} disabled={project.status !== 'draft'} onChange={(event) => store.updateItem(selectedItem.id, { challenge: event.target.value })} /></label>
                             <label><span>预期回应</span><TextField.Root value={selectedItem.response} disabled={project.status !== 'draft'} onChange={(event) => store.updateItem(selectedItem.id, { response: event.target.value })} /></label>
                             <Flex justify="between" align="center"><Text size="2" weight="bold">关键标记</Text><Switch checked={selectedItem.critical} disabled={project.status !== 'draft'} onCheckedChange={(checked) => store.updateItem(selectedItem.id, { critical: checked })} /></Flex>
+                            {selectedItem.critical && (
+                              <div className="inspector-signoff">
+                                <Text size="2" weight="bold" as="p" mb="2">机务签认覆盖</Text>
+                                {coveringsForItem(selectedItem, project.signoffs ?? [], nowTick).length === 0 && <Text size="1" color="red">未被任何签认单覆盖，复核时需补签该关键项。</Text>}
+                                {coveringsForItem(selectedItem, project.signoffs ?? [], nowTick).map(({ signoff, state }) => (
+                                  <div key={signoff.id} className={`signoff-chip-row ${state}`}>
+                                    <Badge size="1" color={state === 'valid' ? 'green' : state === 'stale' ? 'orange' : 'gray'} variant="soft">
+                                      {state === 'valid' ? '有效' : state === 'stale' ? '该项失效' : '已过期'}
+                                    </Badge>
+                                    <span><strong>{signoff.number}</strong><small>{signoff.inspector} · 截止 {formatDeadline(signoff.deadline)}</small></span>
+                                  </div>
+                                ))}
+                                {hasValidSignoff(selectedItem, project.signoffs ?? [], nowTick) && <Text size="1" color="gray">有效签认：{validSignoffNumbers(selectedItem, project.signoffs ?? [], nowTick).join('、')}。内容或前置变化只令本项失效，同单其余项沿用。</Text>}
+                              </div>
+                            )}
                             <label><span>异常处理</span><TextArea value={selectedItem.abnormalProcedure} disabled={project.status !== 'draft'} onChange={(event) => store.updateItem(selectedItem.id, { abnormalProcedure: event.target.value })} placeholder="异常条件、立即动作和后续步骤" /></label>
                             <div>
                               <Text size="2" weight="bold" mb="2" as="p">前置条件</Text>
@@ -421,11 +542,20 @@ function App() {
                 <div className="diff-list">
                   {diffEntries.length ? diffEntries.map((entry) => (
                     <Card key={`${entry.type}-${entry.key}`} className="diff-card">
-                      <Flex justify="between" align="center"><Badge color={entry.type === 'added' ? 'green' : entry.type === 'removed' ? 'red' : entry.type === 'stage' ? 'blue' : 'amber'}>{entry.type === 'added' ? '新增' : entry.type === 'removed' ? '删除' : entry.type === 'stage' ? '阶段' : '修改'}</Badge><Text size="1" color="gray">{entry.stage}</Text></Flex>
-                      <Grid columns="2" gap="3" mt="3" className="diff-columns">
-                        <div className="diff-before"><Text size="1" weight="bold">基准</Text><pre>{entry.before}</pre></div>
-                        <div className="diff-after"><Text size="1" weight="bold">比较版本</Text><pre>{entry.after}</pre></div>
-                      </Grid>
+                      <Flex justify="between" align="center"><Badge color={entry.type === 'added' ? 'green' : entry.type === 'removed' ? 'red' : entry.type === 'stage' ? 'blue' : entry.type === 'signoff' ? 'cyan' : 'amber'}>{entry.type === 'added' ? '新增' : entry.type === 'removed' ? '删除' : entry.type === 'stage' ? '阶段' : entry.type === 'signoff' ? '机务签认' : '修改'}</Badge><Text size="1" color="gray">{entry.stage}</Text></Flex>
+                      {entry.type === 'signoff' ? (
+                        <Grid columns="2" gap="3" mt="3" className="diff-columns">
+                          <div className="diff-before"><Text size="1" weight="bold">基准签认关系</Text><pre>{entry.before}</pre></div>
+                          <div className="diff-after"><Text size="1" weight="bold">比较签认关系</Text><pre>{entry.after}</pre></div>
+                        </Grid>
+                      ) : (
+                        <>
+                          <Grid columns="2" gap="3" mt="3" className="diff-columns">
+                            <div className="diff-before"><Text size="1" weight="bold">基准</Text><pre>{entry.before}</pre>{(entry.beforeSignoffs?.length ?? 0) > 0 && <Text size="1" color="green" as="p">✓签认：{entry.beforeSignoffs?.join('、')}</Text>}</div>
+                            <div className="diff-after"><Text size="1" weight="bold">比较版本</Text><pre>{entry.after}</pre>{(entry.afterSignoffs?.length ?? 0) > 0 && <Text size="1" color="green" as="p">✓签认：{entry.afterSignoffs?.join('、')}</Text>}</div>
+                          </Grid>
+                        </>
+                      )}
                     </Card>
                   )) : <div className="empty-page"><strong>两个版本没有差异</strong><span>选择不同版本后可查看新增、删除和修改的检查项。</span></div>}
                 </div>
@@ -455,11 +585,65 @@ function App() {
       </Dialog.Root>
 
       <Dialog.Root open={freezeOpen} onOpenChange={setFreezeOpen}>
-        <Dialog.Content maxWidth="520px">
+        <Dialog.Content maxWidth="560px">
           <Dialog.Title>冻结 r{project.revision}</Dialog.Title>
-          <Dialog.Description size="2" color="gray">冻结后不可直接编辑，只能通过创建新修订继续修改。</Dialog.Description>
+          <Dialog.Description size="2" color="gray">冻结后不可直接编辑，只能通过创建新修订继续修改。冻结快照将保留全部签认关系。</Dialog.Description>
+          <div className="freeze-signoff">
+            <Flex justify="between" align="center">
+              <Text size="2" weight="bold">关键项机务签认</Text>
+              <Badge color={signoffGaps.length ? 'red' : 'green'}>{coveredCriticalCount}/{criticalItems.length} 已有效覆盖</Badge>
+            </Flex>
+            {signoffGaps.length > 0 ? (
+              <ul className="freeze-signoff-gaps">
+                {signoffGaps.map((gap) => (
+                  <li key={gap.itemId}>
+                    <Text size="1" color="red">
+                      {gap.reason === 'missing' ? '缺签认单' : gap.reason === 'stale' ? '旧签认对该项失效' : '签认过期'}：{gap.challenge}
+                      {gap.failedNumbers.length > 0 && `（${gap.failedNumbers.join('、')}）`}
+                    </Text>
+                  </li>
+                ))}
+              </ul>
+            ) : <Text size="1" color="green" as="p" mt="2">所有关键项均有有效签认，可以冻结。</Text>}
+          </div>
           <TextArea mt="4" value={freezeNote} onChange={(event) => setFreezeNote(event.target.value)} placeholder="复核意见或版本说明" />
-          <Flex gap="3" justify="end" mt="4"><Dialog.Close><Button variant="soft">取消</Button></Dialog.Close><Button color="green" onClick={() => { store.freezeRevision(freezeNote); setFreezeOpen(false); setFreezeNote(''); }}>确认冻结</Button></Flex>
+          <Flex gap="3" justify="end" mt="4">
+            <Dialog.Close><Button variant="soft">取消</Button></Dialog.Close>
+            {signoffGaps.length > 0 && project.status === 'review'
+              ? <Button color="amber" variant="soft" onClick={() => { setFreezeOpen(false); openSignoffDialog(); }}>先补签</Button>
+              : null}
+            <Button color="green" disabled={signoffGaps.length > 0} onClick={() => { store.freezeRevision(freezeNote); setFreezeOpen(false); setFreezeNote(''); }}>确认冻结</Button>
+          </Flex>
+        </Dialog.Content>
+      </Dialog.Root>
+
+      <Dialog.Root open={signoffOpen} onOpenChange={setSignoffOpen}>
+        <Dialog.Content maxWidth="600px">
+          <Dialog.Title>登记机务签认单</Dialog.Title>
+          <Dialog.Description size="2" color="gray">一张签认单可一次覆盖多个关键项；登记后某项内容或前置条件变化，仅该项失效，其余覆盖项继续沿用。</Dialog.Description>
+          <Grid columns="2" gap="3" mt="4">
+            <label className="signoff-field"><span>签认号</span><TextField.Root value={soNumber} onChange={(event) => setSoNumber(event.target.value)} placeholder="如 JQ-2026-101" /></label>
+            <label className="signoff-field"><span>签认机务</span><TextField.Root value={soInspector} onChange={(event) => setSoInspector(event.target.value)} placeholder="姓名 / 工号" /></label>
+            <label className="signoff-field"><span>签认截止时间</span><TextField.Root type="datetime-local" value={soDeadline} onChange={(event) => setSoDeadline(event.target.value)} /></label>
+            <label className="signoff-field"><span>备注</span><TextField.Root value={soNote} onChange={(event) => setSoNote(event.target.value)} placeholder="工单来源 / 适用范围" /></label>
+          </Grid>
+          <Text size="2" weight="bold" as="p" mt="4" mb="2">覆盖的关键项（按当前内容登记指纹）</Text>
+          <div className="signoff-pick-list">
+            {criticalItems.map((item) => {
+              const valid = hasValidSignoff(item, project.signoffs ?? [], nowTick);
+              return (
+                <label key={item.id} className={`signoff-pick-row ${soItemIds.includes(item.id) ? 'picked' : ''}`}>
+                  <input type="checkbox" checked={soItemIds.includes(item.id)} onChange={() => toggleSignoffItem(item.id)} />
+                  <span className="signoff-pick-name">{item.challenge || '未命名'}</span>
+                  {valid ? <Badge color="green" size="1" variant="soft">已有效签认</Badge> : <Badge color="red" size="1" variant="soft">待补签</Badge>}
+                </label>
+              );
+            })}
+          </div>
+          <Flex gap="3" justify="end" mt="4">
+            <Dialog.Close><Button variant="soft">取消</Button></Dialog.Close>
+            <Button color="green" disabled={!signoffFormValid} onClick={submitSignoff}>登记签认（{soItemIds.length} 项）</Button>
+          </Flex>
         </Dialog.Content>
       </Dialog.Root>
 
@@ -482,25 +666,170 @@ function App() {
   );
 }
 
+function SignoffCoveragePanel({
+  project,
+  nowMs,
+  onRegister,
+  onDelete,
+  onSelectItem
+}: {
+  project: ChecklistProject;
+  nowMs: number;
+  onRegister: () => void;
+  onDelete: (signoffId: string) => void;
+  onSelectItem: (itemId: string) => void;
+}) {
+  const signoffs = project.signoffs ?? [];
+  const gaps = reviewSignoffCoverage(project.items, signoffs, nowMs);
+  const critical = project.items.filter((item) => item.critical).sort((a, b) => {
+    const sa = project.stages.find((stage) => stage.id === a.stageId)?.order ?? 0;
+    const sb = project.stages.find((stage) => stage.id === b.stageId)?.order ?? 0;
+    return sa - sb || a.order - b.order;
+  });
+  const stateMeta = {
+    valid: { symbol: '✓', title: '有效签认', className: 'cov-valid' },
+    stale: { symbol: '改', title: '该项内容或前置已变化，本单对该项失效，其余项沿用', className: 'cov-stale' },
+    expired: { symbol: '止', title: '已过签认截止时间', className: 'cov-expired' }
+  } as const;
+
+  return (
+    <Card className="signoff-panel" mb="3">
+      <Flex justify="between" align="center" wrap="wrap" gap="2" mb="2">
+        <Flex gap="2" align="center" wrap="wrap">
+          <Heading size="3">机务签认覆盖</Heading>
+          <Badge color={gaps.length ? 'red' : 'green'} variant="soft">{critical.length - gaps.length}/{critical.length} 关键项有效覆盖</Badge>
+          <Text size="1" color="gray">一张单可覆盖多项；仅变化项失效，未动项沿用 · 普通项无需签认</Text>
+        </Flex>
+        {project.status === 'review' && <Button size="2" color="amber" onClick={onRegister}>登记签认单</Button>}
+      </Flex>
+      <div className="signoff-table-wrap">
+        <table className="signoff-matrix">
+          <thead>
+            <tr>
+              <th className="cov-item-head">关键项</th>
+              {signoffs.map((signoff) => (
+                <th key={signoff.id}>
+                  <div className="cov-sheet-head">
+                    <strong>{signoff.number}</strong>
+                    <small>{signoff.inspector} · 止 {formatDeadline(signoff.deadline)}</small>
+                    {project.status === 'review' && (
+                      <button className="cov-sheet-del" onClick={() => onDelete(signoff.id)} title="撤签此单">删除</button>
+                    )}
+                  </div>
+                </th>
+              ))}
+              <th className="cov-missing-head">状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            {critical.map((item) => {
+              const coverings = coveringsForItem(item, signoffs, nowMs);
+              const valid = coverings.some((entry) => entry.state === 'valid');
+              const gap = gaps.find((entry) => entry.itemId === item.id);
+              return (
+                <tr key={item.id} className={valid ? '' : 'cov-row-missing'} onClick={() => onSelectItem(item.id)}>
+                  <td className="cov-item-name">
+                    <span className="critical-mark">◆</span> {item.challenge || '未命名'}
+                  </td>
+                  {signoffs.map((signoff) => {
+                    const state = coverings.find((entry) => entry.signoff.id === signoff.id)?.state;
+                    if (!state) return <td key={signoff.id} className="cov-cell cov-none"><span>—</span></td>;
+                    return (
+                      <td key={signoff.id} className={`cov-cell ${stateMeta[state].className}`}>
+                        <Tooltip content={stateMeta[state].title}><span>{stateMeta[state].symbol}</span></Tooltip>
+                      </td>
+                    );
+                  })}
+                  <td className="cov-status">
+                    {valid
+                      ? <Badge color="green" size="1" variant="soft">✓ {coverings.filter((entry) => entry.state === 'valid').map((entry) => entry.signoff.number).join('、')}</Badge>
+                      : <Badge color="red" size="1" variant="soft">{gap?.reason === 'missing' ? '缺签认单' : gap?.reason === 'stale' ? `旧签认失效：${gap.failedNumbers.join('、')}` : `已过期：${gap?.failedNumbers.join('、')}`}</Badge>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {gaps.length > 0 && (
+        <Callout.Root color="red" mt="3" size="1">
+          <Callout.Text>
+            <strong>冻结前必须补齐以下关键项签认：</strong>
+            {gaps.map((gap) => (
+              <span key={gap.itemId} className="gap-line">· {gap.detail}</span>
+            ))}
+          </Callout.Text>
+        </Callout.Root>
+      )}
+    </Card>
+  );
+}
+
 function PrintableChecklist({ project, compact = false }: { project: ChecklistProject; compact?: boolean }) {
   const stages = project.stages.slice().sort((a, b) => a.order - b.order);
+  const signoffs = project.signoffs ?? [];
+  const nowMs = Date.now();
+  const criticalCount = project.items.filter((item) => item.critical).length;
   return (
     <article className={`print-sheet ${compact ? 'compact' : ''}`}>
-      <header><div><Heading size="7">{project.name}</Heading><Text color="gray" as="p">{project.aircraft} · r{project.revision} · {statusMeta[project.status].label}</Text></div><Badge color={statusMeta[project.status].color}>{project.items.length} 项</Badge></header>
+      <header><div><Heading size="7">{project.name}</Heading><Text color="gray" as="p">{project.aircraft} · r{project.revision} · {statusMeta[project.status].label}</Text></div><Badge color={statusMeta[project.status].color}>{project.items.length} 项{criticalCount ? ` · ${criticalCount} 关键` : ''}</Badge></header>
       {stages.map((stage, index) => (
         <section key={stage.id}>
           <div className="print-stage-title"><span>{String(index + 1).padStart(2, '0')}</span><div><Heading size="5">{stage.name}</Heading><Text color="gray" size="1">{stage.description}</Text></div></div>
           <table>
-            <thead><tr><th style={{ width: '34%' }}>挑战语</th><th style={{ width: '25%' }}>预期回应</th><th>异常处理</th></tr></thead>
+            <thead><tr><th style={{ width: '30%' }}>挑战语</th><th style={{ width: '21%' }}>预期回应</th><th style={{ width: '31%' }}>异常处理</th><th style={{ width: '18%' }}>机务签认</th></tr></thead>
             <tbody>
-              {project.items.filter((item) => item.stageId === stage.id).sort((a, b) => a.order - b.order).map((item) => (
-                <tr key={item.id}><td>{item.critical && <span className="critical-mark">◆</span>} {item.challenge}</td><td><strong>{item.response || '未填写'}</strong></td><td>{item.abnormalProcedure || '—'}</td></tr>
-              ))}
-              {!project.items.some((item) => item.stageId === stage.id) && <tr><td colSpan={3}>本阶段暂无检查项</td></tr>}
+              {project.items.filter((item) => item.stageId === stage.id).sort((a, b) => a.order - b.order).map((item) => {
+                const coverings = item.critical ? coveringsForItem(item, signoffs, nowMs) : [];
+                const valid = coverings.filter((entry) => entry.state === 'valid');
+                return (
+                  <tr key={item.id} className={item.critical ? 'critical-row' : ''}>
+                    <td>{item.critical && <span className="critical-mark">◆</span>} {item.challenge}</td>
+                    <td><strong>{item.response || '未填写'}</strong></td>
+                    <td>{item.abnormalProcedure || '—'}</td>
+                    <td className="print-signoff-cell">
+                      {!item.critical ? <span className="print-signoff-na">—</span> : valid.length > 0
+                        ? valid.map((entry) => <span key={entry.signoff.id} className="print-signoff-ok">{entry.signoff.number}</span>)
+                        : coverings.length > 0
+                          ? coverings.map((entry) => <span key={entry.signoff.id} className="print-signoff-bad" title={entry.state === 'stale' ? '该项内容已变化，旧签认对该项失效' : '已过截止时间'}>{entry.signoff.number}({entry.state === 'stale' ? '失效' : '过期'})</span>)
+                          : <span className="print-signoff-missing">待签认</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+              {!project.items.some((item) => item.stageId === stage.id) && <tr><td colSpan={4}>本阶段暂无检查项</td></tr>}
             </tbody>
           </table>
         </section>
       ))}
+      {signoffs.length > 0 && (
+        <section className="print-signoff-register">
+          <Heading size="5" mb="2">机务签认台账</Heading>
+          <table>
+            <thead><tr><th style={{ width: '16%' }}>签认号</th><th style={{ width: '12%' }}>签认机务</th><th style={{ width: '18%' }}>截止时间</th><th>覆盖关键项</th></tr></thead>
+            <tbody>
+              {signoffs.map((signoff) => {
+                const expired = new Date(signoff.deadline).getTime() < nowMs;
+                const coveredNames = Object.keys(signoff.covered).map((itemId) => {
+                  const item = project.items.find((entry) => entry.id === itemId);
+                  if (!item) return null;
+                  const state = coveringsForItem(item, [signoff], nowMs)[0]?.state;
+                  const suffix = state === 'stale' ? '(该项失效)' : state === 'expired' ? '(过期)' : '';
+                  return <span key={itemId} className={state === 'valid' ? 'print-signoff-ok' : state ? 'print-signoff-bad' : ''}>{item.challenge}{suffix}</span>;
+                });
+                return (
+                  <tr key={signoff.id} className={expired ? 'signoff-row-expired' : ''}>
+                    <td>{signoff.number}</td>
+                    <td>{signoff.inspector || '—'}</td>
+                    <td>{formatDeadline(signoff.deadline)}</td>
+                    <td className="print-register-covered">{coveredNames.filter(Boolean)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </section>
+      )}
     </article>
   );
 }

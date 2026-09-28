@@ -1,18 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createInitialState } from './data';
-import type { ChecklistItem, ChecklistProject, ChecklistRevision, FlightStage, WorkspaceState } from './types';
+import { itemFingerprint, pruneMissingCovered, reviewSignoffCoverage } from './signoff';
+import type { ChecklistItem, ChecklistProject, ChecklistRevision, FlightStage, Signoff, WorkspaceState } from './types';
 
 const STORAGE_KEY = 'sologsb-1030-workspace-v1';
 const clone = <T>(value: T): T => structuredClone(value);
 const uid = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 const now = () => new Date().toISOString();
 
+/** 兼容旧版本地数据：补齐签认字段 */
+function migrateState(parsed: WorkspaceState): WorkspaceState {
+  parsed.projects.forEach((project) => {
+    if (!Array.isArray(project.signoffs)) project.signoffs = [];
+    project.revisions.forEach((revision) => {
+      if (!Array.isArray(revision.signoffs)) revision.signoffs = [];
+    });
+  });
+  return parsed;
+}
+
 function loadState(): WorkspaceState {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       const parsed = JSON.parse(saved) as WorkspaceState;
-      if (parsed.schemaVersion === 1 && parsed.projects?.length) return parsed;
+      if (parsed.schemaVersion === 1 && parsed.projects?.length) return migrateState(parsed);
     }
   } catch {
     // Corrupted local draft falls back to the bundled operational checklist.
@@ -83,7 +95,8 @@ export function useChecklistStore() {
         reviewNote: '',
         stages: [{ id: uid('stage'), name: '飞行前检查', order: 0, description: '说明本阶段目标。' }],
         items: [],
-        revisions: []
+        revisions: [],
+        signoffs: []
       });
       next.selectedProjectId = id;
       return next;
@@ -153,6 +166,9 @@ export function useChecklistStore() {
       project.stages.forEach((stage) => {
         project.items.filter((item) => item.stageId === stage.id).sort((a, b) => a.order - b.order).forEach((item, order) => { item.order = order; });
       });
+      // 检查项删除后，签认单上的该覆盖项一并移除（普通项/关键项均安全）。
+      const remainingIds = new Set(project.items.map((item) => item.id));
+      project.signoffs = project.signoffs.map((signoff) => pruneMissingCovered(signoff, remainingIds));
     });
   }, [commit]);
 
@@ -189,8 +205,42 @@ export function useChecklistStore() {
     });
   }, [directUpdate]);
 
+  /**
+   * 复核时登记机务签认单：记录签认号、截止时间和覆盖的关键项（登记时刻指纹）。
+   * 一张单可一次覆盖多个关键项；只允许在复核阶段登记。
+   */
+  const registerSignoff = useCallback((input: { number: string; inspector: string; deadline: string; note: string; itemIds: string[] }) => {
+    directUpdate((project) => {
+      if (project.status !== 'review') return;
+      const covered: Record<string, string> = {};
+      project.items.forEach((item) => {
+        if (item.critical && input.itemIds.includes(item.id)) covered[item.id] = itemFingerprint(item);
+      });
+      const signoff: Signoff = {
+        id: uid('signoff'),
+        number: input.number.trim(),
+        inspector: input.inspector.trim(),
+        deadline: input.deadline,
+        registeredAt: now(),
+        note: input.note.trim(),
+        covered
+      };
+      project.signoffs.push(signoff);
+    });
+  }, [directUpdate]);
+
+  const deleteSignoff = useCallback((signoffId: string) => {
+    directUpdate((project) => {
+      if (project.status !== 'review') return;
+      project.signoffs = project.signoffs.filter((signoff) => signoff.id !== signoffId);
+    });
+  }, [directUpdate]);
+
   const freezeRevision = useCallback((note: string) => {
     directUpdate((project) => {
+      if (project.status !== 'review') return;
+      // 冻结硬门槛：每个关键项都必须有有效机务签认（未覆盖/已变化/已过期均阻断）
+      if (reviewSignoffCoverage(project.items, project.signoffs ?? []).length > 0) return;
       const version = project.revision;
       const snapshot: ChecklistRevision = {
         id: uid('revision'),
@@ -199,7 +249,9 @@ export function useChecklistStore() {
         createdAt: now(),
         note: note.trim() || '复核通过并冻结',
         stages: clone(project.stages),
-        items: clone(project.items)
+        items: clone(project.items),
+        // 冻结快照保留签认关系，重开浏览器后仍可核对
+        signoffs: clone(project.signoffs)
       };
       project.revisions.unshift(snapshot);
       project.status = 'frozen';
@@ -212,6 +264,8 @@ export function useChecklistStore() {
       project.revision += 1;
       project.status = 'draft';
       project.reviewNote = '';
+      // 已冻结版本的签认关系带入新修订草稿：未动项沿用；
+      // 内容或前置条件变化的项会按指纹自动判定失效，复核时补签该项即可。
       project.updatedAt = now();
     });
   }, [directUpdate]);
@@ -259,6 +313,8 @@ export function useChecklistStore() {
     reorderItem,
     nudgeItem,
     submitForReview,
+    registerSignoff,
+    deleteSignoff,
     freezeRevision,
     createRevision,
     undo,

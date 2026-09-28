@@ -121,6 +121,53 @@ kbd { border: 1px solid var(--gray-a7); border-bottom-width: 2px; border-radius:
 .help-list div { display: grid; grid-template-columns: 150px 1fr; align-items: center; gap: 12px; font-size: 12px; }
 .help-list kbd { justify-self: start; }
 
+/* 机务签认覆盖面板 */
+.signoff-panel { border-color: color-mix(in srgb, var(--amber-7) 45%, var(--gray-a5)); }
+.signoff-table-wrap { overflow-x: auto; }
+.signoff-matrix { width: 100%; border-collapse: collapse; font-size: 11px; }
+.signoff-matrix th, .signoff-matrix td { border: 1px solid var(--gray-a5); padding: 6px 8px; text-align: center; vertical-align: middle; }
+.signoff-matrix thead th { background: var(--gray-a2); }
+.cov-item-head, .cov-item-name { text-align: left !important; min-width: 150px; }
+.cov-item-name { cursor: pointer; font-weight: 700; white-space: nowrap; }
+.cov-item-name:hover { background: var(--accent-a3); }
+.cov-missing-head { min-width: 150px; }
+.cov-sheet-head { display: grid; gap: 2px; justify-items: center; padding: 2px; }
+.cov-sheet-head strong { font-size: 11px; }
+.cov-sheet-head small { font-weight: 400; color: var(--gray-10); font-size: 9px; white-space: nowrap; }
+.cov-sheet-del { border: 0; background: transparent; color: var(--red-10); font-size: 9px; cursor: pointer; padding: 0; }
+.cov-sheet-del:hover { text-decoration: underline; }
+.cov-cell { min-width: 62px; }
+.cov-cell span { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; font-size: 11px; font-weight: 800; }
+.cov-none span { background: transparent; color: var(--gray-8); font-weight: 400; }
+.cov-valid span { background: var(--green-4); color: var(--green-11); }
+.cov-stale span { background: var(--orange-4); color: var(--orange-11); }
+.cov-expired span { background: var(--gray-a5); color: var(--gray-11); }
+.cov-row-missing .cov-item-name { box-shadow: inset 3px 0 0 var(--red-9); }
+.cov-status { text-align: center; }
+.gap-line { display: block; margin-top: 3px; font-size: 11px; line-height: 1.5; }
+.inspector-signoff { display: grid; gap: 7px; padding: 10px; border: 1px solid var(--gray-a5); border-radius: 10px; background: var(--gray-a2); }
+.signoff-chip-row { display: flex; align-items: center; gap: 8px; }
+.signoff-chip-row span { display: grid; gap: 1px; min-width: 0; }
+.signoff-chip-row strong { font-size: 11px; }
+.signoff-chip-row small { font-size: 10px; color: var(--gray-10); }
+.signoff-field { display: grid; gap: 6px; }
+.signoff-field > span { font-size: 12px; font-weight: 700; }
+.signoff-pick-list { max-height: 260px; overflow: auto; display: grid; gap: 4px; border: 1px solid var(--gray-a5); border-radius: 10px; padding: 8px; background: var(--gray-a2); }
+.signoff-pick-row { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 7px 9px; border-radius: 8px; font-size: 12px; cursor: pointer; }
+.signoff-pick-row:hover { background: var(--gray-a3); }
+.signoff-pick-row.picked { background: var(--accent-a3); }
+.signoff-pick-name { font-weight: 600; }
+.freeze-signoff { margin-top: 14px; padding: 12px; border: 1px solid var(--gray-a5); border-radius: 10px; background: var(--gray-a2); }
+.freeze-signoff-gaps { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4px; }
+.print-signoff-cell { display: flex; flex-wrap: wrap; gap: 4px; }
+.print-signoff-ok { color: #0a7d2c; font-weight: 700; }
+.print-signoff-bad { color: #b54708; font-weight: 700; }
+.print-signoff-missing { color: #c0392b; font-weight: 700; }
+.print-signoff-na { color: #999; }
+.print-register-covered { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.print-signoff-register { border-top: 3px solid var(--gray-12); }
+tr.critical-row td:first-child { color: var(--red-11); font-weight: 700; }
+
 @media (max-width: 1320px) {
   .editor-grid { grid-template-columns: 210px minmax(570px, 1fr) 315px; }
   .workflow-step { min-width: 160px; }

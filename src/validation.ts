@@ -1,8 +1,12 @@
+import { reviewSignoffCoverage } from './signoff';
 import type { ChecklistItem, ChecklistProject, ValidationIssue } from './types';
 
 const normalize = (value: string) => value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('en');
 
-export function validateProject(project: ChecklistProject): ValidationIssue[] {
+export function validateProject(
+  project: ChecklistProject,
+  options: { enforceSignoffs?: boolean } = {}
+): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const stageById = new Map(project.stages.map((stage) => [stage.id, stage]));
   const itemById = new Map(project.items.map((item) => [item.id, item]));
@@ -72,6 +76,30 @@ export function validateProject(project: ChecklistProject): ValidationIssue[] {
       add({ id: `${stage.id}-empty`, type: 'orphan-stage', level: 'info', stageId: stage.id, title: '阶段尚未配置检查项', detail: `${stage.name} 当前为空。` });
     }
   });
+
+  // 机务签认覆盖：冻结前每个关键项都必须有有效签认。
+  // 复核期为阻断错误（不能冻结）；编辑期只给非阻断提示，普通项不受影响。
+  if (project.status === 'review' || project.status === 'draft') {
+    const enforce = options.enforceSignoffs ?? project.status === 'review';
+    const gaps = reviewSignoffCoverage(project.items, project.signoffs ?? []);
+    gaps.forEach((gap) => {
+      const item = project.items.find((entry) => entry.id === gap.itemId);
+      issues.push({
+        id: `signoff-${gap.reason}-${gap.itemId}`,
+        type: gap.reason === 'missing' ? 'missing-signoff' : gap.reason === 'stale' ? 'stale-signoff' : 'expired-signoff',
+        level: enforce ? 'error' : 'info',
+        stageId: item?.stageId,
+        itemId: gap.itemId,
+        title:
+          gap.reason === 'missing'
+            ? '关键项缺少机务签认'
+            : gap.reason === 'stale'
+              ? '签认对该项已失效'
+              : '签认已过截止时间',
+        detail: enforce ? gap.detail : `${gap.detail}（提交复核前补齐即可）`
+      });
+    });
+  }
 
   return issues;
 }

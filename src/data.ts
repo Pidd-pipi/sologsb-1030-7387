@@ -1,4 +1,5 @@
-import type { ChecklistItem, ChecklistProject, FlightStage, WorkspaceState } from './types';
+import { itemFingerprint } from './signoff';
+import type { ChecklistItem, ChecklistProject, FlightStage, Signoff, WorkspaceState } from './types';
 
 const stages: FlightStage[] = [
   { id: 'stage-preflight', name: '飞行前检查', order: 0, description: '驾驶舱准备与飞机状态核对。' },
@@ -49,6 +50,83 @@ const items: ChecklistItem[] = [
   item('item-landing-clear', 'stage-landing', 1, '着陆跑道', 'CLEAR', true, ['item-runway'], '跑道不安全时执行复飞。')
 ];
 
+interface SeedSignoffDef {
+  id: string;
+  number: string;
+  inspector: string;
+  registeredAt: string;
+  deadline: string;
+  note: string;
+  ids: string[];
+}
+
+const seedSignoffDefs: SeedSignoffDef[] = [
+  {
+    id: 'signoff-042',
+    number: 'JQ-2026-042',
+    inspector: '王机务',
+    registeredAt: '2026-09-18T02:00:00.000Z',
+    deadline: '2026-10-15T00:00:00.000Z',
+    note: '航前/启动/滑行/起飞关键项一次覆盖',
+    ids: ['item-battery', 'item-fuel', 'item-start-clear', 'item-taxi-clearance', 'item-runway', 'item-flaps']
+  },
+  {
+    id: 'signoff-051',
+    number: 'JQ-2026-051',
+    inspector: '李机务',
+    registeredAt: '2026-09-24T06:00:00.000Z',
+    deadline: '2026-10-31T00:00:00.000Z',
+    note: 'r3 新增“着陆跑道”关键项补签',
+    ids: ['item-landing-clear']
+  },
+  {
+    id: 'signoff-028',
+    number: 'JQ-2026-028',
+    inspector: '王机务',
+    registeredAt: '2026-09-10T03:00:00.000Z',
+    deadline: '2026-10-10T00:00:00.000Z',
+    note: '进近与着陆关键构型签认',
+    ids: ['item-minimums', 'item-landing-gear', 'item-landing-clear']
+  }
+];
+
+/**
+ * 生成各版本快照自带的签认关系。
+ * 工作稿中“襟翼”回应后来被清空，JQ-2026-042 登记时依据的仍是 CHECKED，
+ * 因此该单对襟翼单项失效（stale），同单覆盖的其余项继续沿用。
+ */
+function buildSeedSignoffs(
+  targetItems: ChecklistItem[],
+  scope: 'work' | 'revision-1' | 'revision-2' = 'work'
+): Signoff[] {
+  const freezeAt = scope === 'revision-1' ? '2026-09-12T07:30:00.000Z' : scope === 'revision-2' ? '2026-09-20T04:20:00.000Z' : null;
+  const basisItems = scope === 'work'
+    ? targetItems.map((entry) => (entry.id === 'item-flaps' ? { ...entry, response: 'CHECKED' } : entry))
+    : targetItems;
+  const basisById = new Map(basisItems.map((entry) => [entry.id, entry]));
+  const targetIds = new Set(targetItems.map((entry) => entry.id));
+
+  return seedSignoffDefs
+    .filter((def) => !freezeAt || new Date(def.registeredAt).getTime() <= new Date(freezeAt).getTime())
+    .map((def) => {
+      const covered: Record<string, string> = {};
+      def.ids.forEach((id) => {
+        if (!targetIds.has(id)) return;
+        const basis = basisById.get(id);
+        if (basis) covered[id] = itemFingerprint(basis);
+      });
+      return {
+        id: `${def.id}-${scope}`,
+        number: def.number,
+        inspector: def.inspector,
+        registeredAt: def.registeredAt,
+        deadline: def.deadline,
+        note: def.note,
+        covered
+      };
+    });
+}
+
 const project: ChecklistProject = {
   id: 'project-c172',
   name: 'C172 标准操作检查单',
@@ -59,6 +137,7 @@ const project: ChecklistProject = {
   reviewNote: '',
   stages: structuredClone(stages),
   items: structuredClone(items),
+  signoffs: buildSeedSignoffs(items),
   revisions: [
     {
       id: 'revision-2',
@@ -67,7 +146,8 @@ const project: ChecklistProject = {
       createdAt: '2026-09-20T04:20:00.000Z',
       note: '训练飞行前发布版本',
       stages: structuredClone(stages),
-      items: structuredClone(items.filter((entry) => entry.id !== 'item-pressurization').map((entry) => entry.id === 'item-flaps' ? { ...entry, response: 'CHECKED' } : entry))
+      items: structuredClone(items.filter((entry) => entry.id !== 'item-pressurization').map((entry) => entry.id === 'item-flaps' ? { ...entry, response: 'CHECKED' } : entry)),
+      signoffs: buildSeedSignoffs(items.filter((entry) => entry.id !== 'item-pressurization').map((entry) => entry.id === 'item-flaps' ? { ...entry, response: 'CHECKED' } : entry), 'revision-2')
     },
     {
       id: 'revision-1',
@@ -76,7 +156,8 @@ const project: ChecklistProject = {
       createdAt: '2026-09-12T07:30:00.000Z',
       note: '初始基线',
       stages: structuredClone(stages.slice(0, 5)),
-      items: structuredClone(items.filter((entry) => entry.id !== 'item-pressurization' && entry.id !== 'item-landing-clear'))
+      items: structuredClone(items.filter((entry) => entry.id !== 'item-pressurization' && entry.id !== 'item-landing-clear')),
+      signoffs: buildSeedSignoffs(items.filter((entry) => entry.id !== 'item-pressurization' && entry.id !== 'item-landing-clear'), 'revision-1')
     }
   ]
 };
